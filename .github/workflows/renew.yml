@@ -62,8 +62,6 @@ jobs:
           PIDGIN_PASSWORD: ${{ secrets.PIDGIN_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # TODO(temp): 临时 bypass 登录认证，验证 WARP 出口用；验证通过后删除此行恢复真实登录
-          BYPASS_LOGIN: '1'
         run: |
           python renew_pidginhost.py --debug
 
