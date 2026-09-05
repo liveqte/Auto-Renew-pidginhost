@@ -16,6 +16,8 @@ PidginHost 免费 VPS 自动续期脚本
   python3 renew_pidginhost.py --dry-run      # 只登录并汇报状态，不点延长
   python3 renew_pidginhost.py --debug        # 保留浏览器可见 + 打印详细日志
   python3 renew_pidginhost.py --headless-off # 有头模式（便于排障）
+  python3 renew_pidginhost.py --bypass-login # 临时跳过登录认证，仅验证网络出口（测试用）
+                                             # 工作流中也可用环境变量 BYPASS_LOGIN=1 开启
 
 配置：所有凭据一律从环境变量读取（PIDGIN_EMAIL/PIDGIN_PASSWORD/TG_BOT_TOKEN/TG_CHAT_ID），
       脚本内不保存任何敏感信息。未设置必需环境变量时直接报错退出。
@@ -26,6 +28,8 @@ import datetime
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -89,6 +93,51 @@ CONFIG = get_conf()
 
 
 # ---------------------------------------------------------------------------
+# WARP 出口（参考 wisp-sb.py 的做法：工作流里用 fscarmen/warp-on-actions
+# 以 client 模式启用 WARP，脚本内通过 warp-cli 重连更换出口 IP）
+# ---------------------------------------------------------------------------
+def get_current_ip() -> str:
+    """当前网络出口 IP（获取失败返回 占位符，不抛异常）。"""
+    try:
+        with urllib.request.urlopen("https://api.ipify.org", timeout=10) as resp:
+            return resp.read().decode().strip()
+    except Exception:
+        return "未知"
+
+
+def restart_warp() -> bool:
+    """重连 WARP 以更换出口 IP（与 wisp-sb.py 的 restart_warp 一致）。
+
+    warp-cli 不存在时（如本地非 Linux 环境）直接跳过，不影响脚本运行。
+    """
+    if not shutil.which("warp-cli"):
+        print(f"[WARP] 未检测到 warp-cli，跳过 WARP 重连（当前出口 IP: {get_current_ip()}）")
+        return False
+
+    def _warp(*args, check=False):
+        return subprocess.run(
+            ["sudo", "warp-cli", "--accept-tos", *args],
+            check=check, timeout=30, capture_output=True,
+        )
+
+    print(f"[WARP] 正在重启 WARP 以更换出口 IP... 当前 IP: {get_current_ip()}")
+    try:
+        _warp("disconnect")
+        time.sleep(3)
+        if _warp("registration", "delete").returncode != 0:
+            print("[WARP] 删除注册失败（可能未注册），继续...")
+        _warp("registration", "new", check=True)
+        time.sleep(3)
+        _warp("connect", check=True)
+        time.sleep(10)
+        print(f"[WARP] WARP 重连成功，新出口 IP: {get_current_ip()}")
+        return True
+    except Exception as e:
+        print(f"[WARP] WARP 重连失败: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Telegram 通知
 # ---------------------------------------------------------------------------
 def send_tg(text: str) -> bool:
@@ -119,14 +168,18 @@ def send_tg(text: str) -> bool:
 # 主流程
 # ---------------------------------------------------------------------------
 class PidginRenewer:
-    def __init__(self, headless=True, dry_run=False, debug=False):
+    def __init__(self, headless=True, dry_run=False, debug=False, bypass_login=False):
         self.headless = headless
         self.dry_run = dry_run
         self.debug = debug
+        # 临时测试开关：跳过登录认证，仅验证网络出口连通性（原登录流程保持不变）
+        self.bypass_login = bypass_login
         self.email = CONFIG["pidgin_email"]
         self.password = CONFIG["pidgin_password"]
         self.results = []          # (时间, 事件)
         self.extended = False
+        self.bypass_ok = False
+        self.exit_ip = None
         self.activity_lines = []
         self.server_name = None
         self.server_url = None
@@ -152,13 +205,16 @@ class PidginRenewer:
             page.set_default_timeout(30000)
 
             try:
-                self._login(page)
-                self._find_server(page)
-                if self.server_url:
-                    self._open_server(page)
-                    if not self.dry_run:
-                        self._extend(page)
-                    self._check_activity(page)
+                if self.bypass_login:
+                    self._bypass_probe(page)
+                else:
+                    self._login(page)
+                    self._find_server(page)
+                    if self.server_url:
+                        self._open_server(page)
+                        if not self.dry_run:
+                            self._extend(page)
+                        self._check_activity(page)
             except Exception as e:
                 self.log(f"❌ 流程异常: {e}")
                 if self.debug:
@@ -173,6 +229,17 @@ class PidginRenewer:
                 browser.close()
 
         return self._build_report()
+
+    # ---- 临时 bypass：跳过登录认证，仅验证 WARP 出口连通性 ----
+    def _bypass_probe(self, page):
+        self.log("🧪 BYPASS 模式：账号登录认证已临时跳过（原登录流程未改动）")
+        self.exit_ip = get_current_ip()
+        self.log(f"🌐 当前出口 IP: {self.exit_ip}")
+        page.goto(LOGIN_URL, timeout=60000)
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(2000)
+        self.log(f"🧪 已通过当前出口访问登录页: {page.url}（title: {page.title()}）")
+        self.bypass_ok = True
 
     # ---- 登录 ----
     def _login(self, page):
@@ -364,7 +431,10 @@ class PidginRenewer:
     def _build_report(self):
         # 执行时间用北京时间
         now = now_cn().strftime("%Y-%m-%d %H:%M:%S")
-        status = "✅ 成功" if self.extended else ("🔍 仅检查(DRY-RUN)" if self.dry_run else "❌ 失败/未延长")
+        if self.bypass_login:
+            status = "🧪 BYPASS 测试（登录已临时跳过）" if self.bypass_ok else "❌ BYPASS 探测失败"
+        else:
+            status = "✅ 成功" if self.extended else ("🔍 仅检查(DRY-RUN)" if self.dry_run else "❌ 失败/未延长")
         # 精简版：只发核心状态，Activity/执行日志只用于本地判断，不进 TG
         lines = [
             f"🤖 PidginHost 免费 VPS 自动续期报告",
@@ -373,8 +443,10 @@ class PidginRenewer:
             f"🖥️ 服务器: {self.server_name or '未知'}",
             f"📊 状态: {status}",
         ]
+        if self.bypass_login:
+            lines.append(f"🌐 出口 IP: {self.exit_ip or get_current_ip()}")
         # 仅失败时附一句原因（成功/检查不需要）
-        if not self.extended and not self.dry_run:
+        if not self.extended and not self.dry_run and not self.bypass_login:
             if self.activity_lines:
                 lines.append(f"⚠️ 最近续期记录: {self.activity_lines[0]}")
             else:
@@ -390,13 +462,18 @@ def main():
     ap.add_argument("--headless-off", action="store_true", help="有头模式运行")
     ap.add_argument("--no-tg", action="store_true", help="不发送 TG 报告")
     ap.add_argument("--force", action="store_true", help="忽略 10 天间隔，强制续期")
+    ap.add_argument("--bypass-login", action="store_true",
+                    help="临时跳过登录认证，仅验证网络出口连通性（测试用，原登录流程不变）")
     args = ap.parse_args()
+
+    # 环境变量同样可以开启 bypass（供工作流临时使用）
+    bypass_login = args.bypass_login or os.environ.get("BYPASS_LOGIN", "").strip() == "1"
 
     # ---- 10 天间隔控制 ----
     state_file = CONFIG["state_file"]
     interval = CONFIG["renew_interval_days"]
     now = now_cn().replace(tzinfo=None)  # 北京时间（naive），与 .last_renew 保持一致
-    if not args.force and not args.dry_run:
+    if not args.force and not args.dry_run and not bypass_login:
         last_ts = None
         if os.path.exists(state_file):
             try:
@@ -415,10 +492,14 @@ def main():
                 print(f"[SKIP] 上次续期 {last_ts.strftime('%Y-%m-%d %H:%M')}，距今 {days_since} 天 < {interval} 天，跳过本次执行")
                 return 0
 
+    # ---- WARP 出口：运行前重连一次，更换出口 IP（无 warp-cli 的环境自动跳过）----
+    restart_warp()
+
     renewer = PidginRenewer(
         headless=not args.headless_off,
         dry_run=args.dry_run,
         debug=args.debug,
+        bypass_login=bypass_login,
     )
     report = renewer.run()
 
@@ -438,8 +519,8 @@ def main():
         except Exception as e:
             print(f"[STATE] 写入状态文件失败: {e}")
 
-    # 退出码：成功=0（dry-run 视为成功，仅检查），失败=1
-    if args.dry_run:
+    # 退出码：成功=0（dry-run / bypass 视为成功），失败=1
+    if args.dry_run or bypass_login:
         return 0
     return 0 if renewer.extended else 1
 

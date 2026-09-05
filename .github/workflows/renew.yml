@@ -33,6 +33,13 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install chromium --with-deps
 
+      # 启用 WARP 出口（与 wisp keep 工作流一致，脚本内会再通过 warp-cli 重连换 IP）
+      - name: Enable WARP network
+        uses: fscarmen/warp-on-actions@v1.3
+        with:
+          stack: dual
+          mode: client
+
       - name: Check required secrets
         env:
           PIDGIN_EMAIL: ${{ secrets.PIDGIN_EMAIL }}
@@ -55,6 +62,8 @@ jobs:
           PIDGIN_PASSWORD: ${{ secrets.PIDGIN_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # TODO(temp): 临时 bypass 登录认证，验证 WARP 出口用；验证通过后删除此行恢复真实登录
+          BYPASS_LOGIN: '1'
         run: |
           python renew_pidginhost.py --debug
 
