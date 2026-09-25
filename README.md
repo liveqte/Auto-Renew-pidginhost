@@ -68,7 +68,7 @@
 🤖 PidginHost 免费 VPS 自动续期报告
 🕐 执行时间: 2026-08-04 16:47:20   （北京时间）
 📮 账号: your-email@example.com
-🖥️ 服务器: asmdmma
+🖥️ 服务器: （已脱敏）
 📊 状态: ✅ 成功
 ```
 
@@ -113,7 +113,7 @@ python3 renew_pidginhost.py --debug      # 调试模式
 | `TG_CHAT_ID` | ❌ | Telegram 接收报告的 chat id（不填则跳过通知） |
 | `RENEW_INTERVAL_DAYS` | ❌ | 续期间隔天数（默认 10） |
 
-> 🔒 **安全**：脚本内**不保存任何敏感信息**，凭据一律从环境变量 / GitHub Secrets 读取；缺少必需变量时直接报错退出。
+> 🔒 **安全**：脚本内**不保存任何敏感信息**，凭据一律从环境变量 / GitHub Secrets 读取；缺少必需变量时直接报错退出。Actions 日志是公开可见的，因此脚本输出中会自动脱敏账号邮箱、服务器名 / 服务器 ID 等可标记账号的信息。
 
 ---
 
@@ -137,7 +137,7 @@ python3 renew_pidginhost.py --debug      # 调试模式
 → 确认 `TG_BOT_TOKEN` / `TG_CHAT_ID` 已配置。`TG_CHAT_ID` 是**数字 ID**（不是 @用户名），用 @userinfobot 查。
 
 **Q: 续期失败/找不到续期按钮？**
-→ 可能是 PidginHost 改版。失败时 Actions 会保留 `error_screenshot.png` 截图（在 Artifacts 里），下载看看页面结构，或提 issue。
+→ 可能是 PidginHost 改版。看 Actions 运行日志最后几步的输出定位失败环节（日志已自动脱敏账号信息，不影响判断）；如需看页面实况，可在本地用 `python3 renew_pidginhost.py --headless-off` 复跑。
 
 **Q: 多久续一次？**
 → 每 10 天一次。服务器 30 天到期，每次续 30 天，相当于留 20 天余量，很稳。

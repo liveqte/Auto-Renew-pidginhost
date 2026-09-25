@@ -190,6 +190,14 @@ class PidginRenewer:
         print(line)
         self.results.append(line)
 
+    def _mask(self, text: str) -> str:
+        """去掉文本中可标记账号的信息（服务器名 / 服务器 URL）。"""
+        if self.server_url:
+            text = text.replace(self.server_url, "<server>")
+        if self.server_name:
+            text = text.replace(self.server_name, "<server>")
+        return text
+
     def run(self):
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -216,7 +224,7 @@ class PidginRenewer:
                             self._extend(page)
                         self._check_activity(page)
             except Exception as e:
-                self.log(f"❌ 流程异常: {e}")
+                self.log(f"❌ 流程异常: {self._mask(str(e))}")
                 if self.debug:
                     import traceback
                     traceback.print_exc()
@@ -261,7 +269,7 @@ class PidginRenewer:
         # 第一步：邮箱
         email_input = page.locator("input[name=email]").first
         email_input.fill(self.email)
-        self.log(f"📧 输入账号: {self.email}")
+        self.log("📧 输入账号: ***（已脱敏）")
         page.locator("button[type=submit], button:has-text('Log in / Sign up')").first.click()
         page.wait_for_timeout(2500)
 
@@ -302,11 +310,12 @@ class PidginRenewer:
         self.server_url = href
         self.server_id = href.rstrip("/").split("/")[-1]
         self.server_name = server_links[0].text_content().strip()
-        self.log(f"🖥️ 找到服务器: {self.server_name} → {self.server_url}")
+        # 服务器名 / 服务器 ID 可标记账号，日志与报告里一律脱敏
+        self.log(f"🖥️ 已找到服务器（共 {len(server_links)} 台，名称已脱敏）")
 
     # ---- 打开服务器管理页 ----
     def _open_server(self, page):
-        self.log(f"🔧 打开管理页 {self.server_url}")
+        self.log("🔧 打开服务器管理页")
         page.goto(self.server_url, timeout=60000)
         page.wait_for_load_state("domcontentloaded")
         page.wait_for_timeout(3000)
@@ -327,7 +336,7 @@ class PidginRenewer:
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(2500)
         except Exception as e:
-            self.log(f"⚠️ 回到管理页失败: {e}")
+            self.log(f"⚠️ 回到管理页失败: {self._mask(str(e))}")
 
         # 3. 找按钮（可能在普通位置，也可能在 Actions 下拉里）
         btn = page.locator("button:has-text('Extend 30 days')").first
@@ -397,7 +406,7 @@ class PidginRenewer:
                         self.activity_lines = after
                         self.log("⚠️ Activity 中仍未确认到新记录，可能延迟或未成功")
                 except Exception as e:
-                    self.log(f"⚠️ 兜底检查失败: {e}")
+                    self.log(f"⚠️ 兜底检查失败: {self._mask(str(e))}")
                     self.activity_lines = after
                     self.log("⚠️ Activity 中仍未确认到新记录，可能延迟或未成功")
         return self.extended
@@ -410,9 +419,10 @@ class PidginRenewer:
             page.wait_for_timeout(1500)
             body = page.locator("body").inner_text()
             lines = [l.strip() for l in body.split("\n") if "renewal" in l.lower() or "extend" in l.lower()]
-            return lines
+            # Activity 记录里带账号邮箱，统一打码（避免出现在公开日志/报告里）
+            return [l.replace(self.email, "***") for l in lines] if self.email else lines
         except Exception as e:
-            self.log(f"⚠️ 抓取 Activity 失败: {e}")
+            self.log(f"⚠️ 抓取 Activity 失败: {self._mask(str(e))}")
             return []
 
     # ---- 检查 Activity ----
@@ -440,7 +450,7 @@ class PidginRenewer:
             f"🤖 PidginHost 免费 VPS 自动续期报告",
             f"🕐 执行时间: {now}",
             f"📮 账号: {self.email}",
-            f"🖥️ 服务器: {self.server_name or '未知'}",
+            f"🖥️ 服务器: {'（已脱敏）' if self.server_name else '未知'}",
             f"📊 状态: {status}",
         ]
         if self.bypass_login:
